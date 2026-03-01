@@ -170,6 +170,88 @@ public sealed class SirrClient : ISirrClient, IDisposable
         return new EnvScope(secrets);
     }
 
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<AuditEvent>> GetAuditLogAsync(long? since = null, long? until = null, string? action = null, int? limit = null, CancellationToken ct = default)
+    {
+        var queryParts = new List<string>();
+        if (since.HasValue) queryParts.Add($"since={since.Value}");
+        if (until.HasValue) queryParts.Add($"until={until.Value}");
+        if (action is not null) queryParts.Add($"action={Uri.EscapeDataString(action)}");
+        if (limit.HasValue) queryParts.Add($"limit={limit.Value}");
+        var qs = queryParts.Count > 0 ? "?" + string.Join("&", queryParts) : "";
+
+        var response = await SendAsync<AuditEventsResponse>(HttpMethod.Get, $"/audit{qs}", content: null, ct)
+            .ConfigureAwait(false);
+        return response.Events;
+    }
+
+    /// <inheritdoc />
+    public async Task<WebhookCreateResult> CreateWebhookAsync(string url, string[]? events = null, CancellationToken ct = default)
+    {
+        var payload = new CreateWebhookRequest { Url = url, Events = events };
+        return await SendAsync<WebhookCreateResult>(HttpMethod.Post, "/webhooks", payload, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<Webhook>> ListWebhooksAsync(CancellationToken ct = default)
+    {
+        var response = await SendAsync<ListWebhooksResponse>(HttpMethod.Get, "/webhooks", content: null, ct)
+            .ConfigureAwait(false);
+        return response.Webhooks;
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> DeleteWebhookAsync(string id, CancellationToken ct = default)
+    {
+        try
+        {
+            await SendAsync<DeletedResponse>(HttpMethod.Delete, $"/webhooks/{Uri.EscapeDataString(id)}", content: null, ct)
+                .ConfigureAwait(false);
+            return true;
+        }
+        catch (SirrException ex) when (ex.StatusCode == (int)System.Net.HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+    }
+
+    /// <inheritdoc />
+    public async Task<ApiKeyCreateResult> CreateApiKeyAsync(string label, string[]? permissions = null, string? prefix = null, CancellationToken ct = default)
+    {
+        var payload = new CreateApiKeyRequest
+        {
+            Label = label,
+            Permissions = permissions ?? new[] { "read", "write" },
+            Prefix = prefix,
+        };
+        return await SendAsync<ApiKeyCreateResult>(HttpMethod.Post, "/keys", payload, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<ApiKey>> ListApiKeysAsync(CancellationToken ct = default)
+    {
+        var response = await SendAsync<ListApiKeysResponse>(HttpMethod.Get, "/keys", content: null, ct)
+            .ConfigureAwait(false);
+        return response.Keys;
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> DeleteApiKeyAsync(string id, CancellationToken ct = default)
+    {
+        try
+        {
+            await SendAsync<DeletedResponse>(HttpMethod.Delete, $"/keys/{Uri.EscapeDataString(id)}", content: null, ct)
+                .ConfigureAwait(false);
+            return true;
+        }
+        catch (SirrException ex) when (ex.StatusCode == (int)System.Net.HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+    }
+
     /// <summary>
     /// Disposes the underlying HttpClient if this instance owns it.
     /// </summary>

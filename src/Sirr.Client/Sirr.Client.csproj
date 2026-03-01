@@ -7,8 +7,8 @@
     <Description>Ephemeral secrets for .NET applications. Async HTTP client for the Sirr API.</Description>
     <PackageTags>secrets;vault;ephemeral;sirr;security</PackageTags>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <PackageProjectUrl>https://github.com/SirrVault/dotnet</PackageProjectUrl>
-    <RepositoryUrl>https://github.com/SirrVault/dotnet</RepositoryUrl>
+    <PackageProjectUrl>https://github.com/sirrlock/dotnet</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/sirrlock/dotnet</RepositoryUrl>
     <RepositoryType>git</RepositoryType>
     <PackageReadmeFile>README.md</PackageReadmeFile>
     <GenerateDocumentationFile>true</GenerateDocumentationFile>

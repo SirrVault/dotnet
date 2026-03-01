@@ -1,4 +1,4 @@
-[![CI](https://github.com/SirrVault/dotnet/actions/workflows/ci.yml/badge.svg)](https://github.com/SirrVault/dotnet/actions/workflows/ci.yml)
+[![CI](https://github.com/sirrlock/dotnet/actions/workflows/ci.yml/badge.svg)](https://github.com/sirrlock/dotnet/actions/workflows/ci.yml)
 [![NuGet](https://img.shields.io/nuget/v/Sirr.Client)](https://www.nuget.org/packages/Sirr.Client)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
@@ -6,7 +6,7 @@
 
 **Ephemeral secrets for .NET AI applications. Credentials that expire by design.**
 
-`Sirr.Client` is the .NET client for [Sirr](https://github.com/SirrVault/sirr) — a self-hosted vault where every secret expires by read count, by time, or both. Built for .NET applications using Semantic Kernel, Microsoft.Extensions.AI, Azure OpenAI SDK, or any AI orchestration layer that needs scoped, disposable credentials.
+`Sirr.Client` is the .NET client for [Sirr](https://github.com/sirrlock/sirr) — a self-hosted vault where every secret expires by read count, by time, or both. Built for .NET applications using Semantic Kernel, Microsoft.Extensions.AI, Azure OpenAI SDK, or any AI orchestration layer that needs scoped, disposable credentials.
 
 ---
 
@@ -161,9 +161,9 @@ public class DataIngestionService(ISirrClient sirr) : BackgroundService
 
 | Package | Description |
 |---------|-------------|
-| [sirr](https://github.com/SirrVault/sirr) | Rust monorepo: `sirrd` server + `sirr` CLI |
-| [@sirrvault/mcp](https://github.com/SirrVault/mcp) | MCP server for AI assistants |
-| [@sirrvault/node](https://github.com/SirrVault/node) | Node.js / TypeScript SDK |
-| [sirr (PyPI)](https://github.com/SirrVault/python) | Python SDK |
+| [sirr](https://github.com/sirrlock/sirr) | Rust monorepo: `sirrd` server + `sirr` CLI |
+| [@sirrvault/mcp](https://github.com/sirrlock/mcp) | MCP server for AI assistants |
+| [@sirrvault/node](https://github.com/sirrlock/node) | Node.js / TypeScript SDK |
+| [sirr (PyPI)](https://github.com/sirrlock/python) | Python SDK |
 | [sirr.dev](https://sirr.dev) | Documentation |
 | [sirrlock.com](https://sirrlock.com) | Managed cloud + license keys |

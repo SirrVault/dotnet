@@ -6,6 +6,9 @@ namespace Sirr.Tests;
 
 public sealed class SirrClientTests
 {
+    private static readonly string[] AllEvents = ["*"];
+    private static readonly string[] ReadPermission = ["read"];
+
     private static (SirrClient Client, MockHttpHandler Handler) CreateClient()
     {
         var handler = new MockHttpHandler();
@@ -342,5 +345,140 @@ public sealed class SirrClientTests
 
         // HttpClient should still be usable since SirrClient doesn't own it
         Assert.Equal(new Uri("http://localhost:8080"), http.BaseAddress);
+    }
+
+    // --- Audit ---
+
+    [Fact]
+    public async Task GetAuditLogAsync_ReturnsEvents()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new
+        {
+            events = new[]
+            {
+                new { id = 1L, timestamp = 1000L, action = "secret.create", key = "K", source_ip = "127.0.0.1", success = true, detail = (string?)null },
+            }
+        });
+
+        var result = await client.GetAuditLogAsync();
+
+        Assert.Single(result);
+        Assert.Equal("secret.create", result[0].Action);
+        Assert.Equal("K", result[0].Key);
+    }
+
+    [Fact]
+    public async Task GetAuditLogAsync_SendsQueryParams()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new { events = Array.Empty<object>() });
+
+        await client.GetAuditLogAsync(since: 100, action: "secret.create", limit: 10);
+
+        var uri = handler.Requests[0].RequestUri!.ToString();
+        Assert.Contains("since=100", uri);
+        Assert.Contains("action=secret.create", uri);
+        Assert.Contains("limit=10", uri);
+    }
+
+    // --- Webhooks ---
+
+    [Fact]
+    public async Task CreateWebhookAsync_ReturnsResult()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new { id = "wh_1", secret = "s3c" });
+
+        var result = await client.CreateWebhookAsync("https://example.com/hook");
+
+        Assert.Equal("wh_1", result.Id);
+        Assert.Equal("s3c", result.Secret);
+    }
+
+    [Fact]
+    public async Task ListWebhooksAsync_ReturnsWebhooks()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new
+        {
+            webhooks = new[]
+            {
+                new { id = "wh_1", url = "https://example.com", events = AllEvents, created_at = 1000L },
+            }
+        });
+
+        var result = await client.ListWebhooksAsync();
+
+        Assert.Single(result);
+        Assert.Equal("wh_1", result[0].Id);
+    }
+
+    [Fact]
+    public async Task DeleteWebhookAsync_ReturnsTrue()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new { deleted = true });
+
+        Assert.True(await client.DeleteWebhookAsync("wh_1"));
+    }
+
+    [Fact]
+    public async Task DeleteWebhookAsync_ReturnsFalse_On404()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueNotFound();
+
+        Assert.False(await client.DeleteWebhookAsync("wh_x"));
+    }
+
+    // --- API Keys ---
+
+    [Fact]
+    public async Task CreateApiKeyAsync_ReturnsResult()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new { id = "abc", key = "sirr_key_123", label = "ci", permissions = ReadPermission, prefix = (string?)null });
+
+        var result = await client.CreateApiKeyAsync("ci", permissions: ReadPermission);
+
+        Assert.Equal("abc", result.Id);
+        Assert.Equal("sirr_key_123", result.Key);
+    }
+
+    [Fact]
+    public async Task ListApiKeysAsync_ReturnsKeys()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new
+        {
+            keys = new[]
+            {
+                new { id = "abc", label = "ci", permissions = ReadPermission, prefix = (string?)null, created_at = 1000L },
+            }
+        });
+
+        var result = await client.ListApiKeysAsync();
+
+        Assert.Single(result);
+        Assert.Equal("abc", result[0].Id);
+    }
+
+    [Fact]
+    public async Task DeleteApiKeyAsync_ReturnsTrue()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new { deleted = true });
+
+        Assert.True(await client.DeleteApiKeyAsync("abc"));
+    }
+
+    [Fact]
+    public async Task DeleteApiKeyAsync_ReturnsFalse_On404()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueNotFound();
+
+        Assert.False(await client.DeleteApiKeyAsync("nope"));
     }
 }

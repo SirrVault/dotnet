@@ -63,3 +63,50 @@ internal sealed class ErrorResponse
     [JsonPropertyName("error")]
     public string? Error { get; init; }
 }
+
+internal sealed class AuditEventsResponse
+{
+    [JsonPropertyName("events")]
+    public required AuditEvent[] Events { get; init; }
+}
+
+internal sealed class CreateWebhookRequest
+{
+    [JsonPropertyName("url")]
+    public required string Url { get; init; }
+
+    [JsonPropertyName("events")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string[]? Events { get; init; }
+}
+
+internal sealed class ListWebhooksResponse
+{
+    [JsonPropertyName("webhooks")]
+    public required Webhook[] Webhooks { get; init; }
+}
+
+internal sealed class DeletedResponse
+{
+    [JsonPropertyName("deleted")]
+    public required bool Deleted { get; init; }
+}
+
+internal sealed class CreateApiKeyRequest
+{
+    [JsonPropertyName("label")]
+    public required string Label { get; init; }
+
+    [JsonPropertyName("permissions")]
+    public required string[] Permissions { get; init; }
+
+    [JsonPropertyName("prefix")]
+    [JsonIgnore(Condition = JsonIgnoreCondition.WhenWritingNull)]
+    public string? Prefix { get; init; }
+}
+
+internal sealed class ListApiKeysResponse
+{
+    [JsonPropertyName("keys")]
+    public required ApiKey[] Keys { get; init; }
+}

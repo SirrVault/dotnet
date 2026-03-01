@@ -46,4 +46,39 @@ public interface ISirrClient
     /// Dispose the returned scope to restore original values.
     /// </summary>
     Task<EnvScope> CreateEnvScopeAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Queries the audit log with optional filters.
+    /// </summary>
+    Task<IReadOnlyList<AuditEvent>> GetAuditLogAsync(long? since = null, long? until = null, string? action = null, int? limit = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Registers a webhook endpoint.
+    /// </summary>
+    Task<WebhookCreateResult> CreateWebhookAsync(string url, string[]? events = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Lists all registered webhooks. Signing secrets are redacted.
+    /// </summary>
+    Task<IReadOnlyList<Webhook>> ListWebhooksAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Deletes a webhook by ID. Returns <c>false</c> if it did not exist.
+    /// </summary>
+    Task<bool> DeleteWebhookAsync(string id, CancellationToken ct = default);
+
+    /// <summary>
+    /// Creates a scoped API key. The raw key is returned once.
+    /// </summary>
+    Task<ApiKeyCreateResult> CreateApiKeyAsync(string label, string[]? permissions = null, string? prefix = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Lists all scoped API keys. Key hashes are never returned.
+    /// </summary>
+    Task<IReadOnlyList<ApiKey>> ListApiKeysAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Deletes an API key by ID. Returns <c>false</c> if it did not exist.
+    /// </summary>
+    Task<bool> DeleteApiKeyAsync(string id, CancellationToken ct = default);
 }
