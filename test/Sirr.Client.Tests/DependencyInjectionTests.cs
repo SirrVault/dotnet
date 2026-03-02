@@ -49,7 +49,7 @@ public sealed class DependencyInjectionTests
 
         using var provider = services.BuildServiceProvider();
         var factory = provider.GetRequiredService<IHttpClientFactory>();
-        var httpClient = factory.CreateClient(nameof(ISirrClient));
+        var httpClient = factory.CreateClient("SirrClient");
 
         Assert.Equal(new Uri("https://sirr.example.com"), httpClient.BaseAddress);
         Assert.Equal("Bearer", httpClient.DefaultRequestHeaders.Authorization?.Scheme);

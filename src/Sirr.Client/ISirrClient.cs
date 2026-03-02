@@ -81,4 +81,77 @@ public interface ISirrClient
     /// Deletes an API key by ID. Returns <c>false</c> if it did not exist.
     /// </summary>
     Task<bool> DeleteApiKeyAsync(string id, CancellationToken ct = default);
+
+    // --- /me ---
+
+    /// <summary>
+    /// Gets the authenticated principal's profile.
+    /// </summary>
+    Task<MeResponse> GetMeAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Updates the authenticated principal's profile.
+    /// </summary>
+    Task<MeResponse> UpdateMeAsync(string? name = null, string? email = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Creates a personal API key scoped to the authenticated principal.
+    /// </summary>
+    Task<KeyCreateResult> CreateMeKeyAsync(string label, string[]? permissions = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Deletes a personal API key by ID. Returns <c>false</c> if it did not exist.
+    /// </summary>
+    Task<bool> DeleteMeKeyAsync(string id, CancellationToken ct = default);
+
+    // --- Admin: Orgs ---
+
+    /// <summary>
+    /// Creates a new organization.
+    /// </summary>
+    Task<OrgResponse> CreateOrgAsync(string name, CancellationToken ct = default);
+
+    /// <summary>
+    /// Lists all organizations.
+    /// </summary>
+    Task<IReadOnlyList<OrgResponse>> ListOrgsAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Deletes an organization by ID. Returns <c>false</c> if it did not exist.
+    /// </summary>
+    Task<bool> DeleteOrgAsync(string id, CancellationToken ct = default);
+
+    // --- Admin: Principals ---
+
+    /// <summary>
+    /// Creates a new principal (user or service account).
+    /// </summary>
+    Task<PrincipalResponse> CreatePrincipalAsync(string role, string? email = null, string? name = null, string? org = null, CancellationToken ct = default);
+
+    /// <summary>
+    /// Lists all principals.
+    /// </summary>
+    Task<IReadOnlyList<PrincipalResponse>> ListPrincipalsAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Deletes a principal by ID. Returns <c>false</c> if it did not exist.
+    /// </summary>
+    Task<bool> DeletePrincipalAsync(string id, CancellationToken ct = default);
+
+    // --- Admin: Roles ---
+
+    /// <summary>
+    /// Creates a new role.
+    /// </summary>
+    Task<RoleResponse> CreateRoleAsync(string name, string[] permissions, CancellationToken ct = default);
+
+    /// <summary>
+    /// Lists all roles.
+    /// </summary>
+    Task<IReadOnlyList<RoleResponse>> ListRolesAsync(CancellationToken ct = default);
+
+    /// <summary>
+    /// Deletes a role by ID. Returns <c>false</c> if it did not exist.
+    /// </summary>
+    Task<bool> DeleteRoleAsync(string id, CancellationToken ct = default);
 }

@@ -9,6 +9,8 @@ namespace Sirr;
 /// </summary>
 public static class SirrServiceCollectionExtensions
 {
+    private const string HttpClientName = "SirrClient";
+
     /// <summary>
     /// Registers <see cref="ISirrClient"/> using <see cref="IHttpClientFactory"/>.
     /// Returns <see cref="IHttpClientBuilder"/> for chaining (e.g. Polly policies).
@@ -21,7 +23,15 @@ public static class SirrServiceCollectionExtensions
 
         services.Configure(configure);
 
-        return services.AddHttpClient<ISirrClient, SirrClient>((sp, client) =>
+        services.AddTransient<ISirrClient>(sp =>
+        {
+            var options = sp.GetRequiredService<IOptions<SirrOptions>>().Value;
+            var factory = sp.GetRequiredService<IHttpClientFactory>();
+            var httpClient = factory.CreateClient(HttpClientName);
+            return new SirrClient(httpClient, options.Org);
+        });
+
+        return services.AddHttpClient(HttpClientName, (sp, client) =>
         {
             var options = sp.GetRequiredService<IOptions<SirrOptions>>().Value;
 

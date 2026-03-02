@@ -481,4 +481,355 @@ public sealed class SirrClientTests
 
         Assert.False(await client.DeleteApiKeyAsync("nope"));
     }
+
+    // --- Org-scoped paths ---
+
+    [Fact]
+    public async Task OrgClient_PushAsync_UsesOrgScopedPath()
+    {
+        var handler = new MockHttpHandler();
+        var client = CreateOrgScopedClient("acme", handler);
+        handler.EnqueueOk(new { key = "K" });
+
+        await client.PushAsync("K", "V");
+
+        Assert.Equal("/orgs/acme/secrets", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task OrgClient_GetAsync_UsesOrgScopedPath()
+    {
+        var handler = new MockHttpHandler();
+        var client = CreateOrgScopedClient("acme", handler);
+        handler.EnqueueOk(new { key = "K", value = "v" });
+
+        await client.GetAsync("K");
+
+        Assert.Equal("/orgs/acme/secrets/K", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task OrgClient_DeleteAsync_UsesOrgScopedPath()
+    {
+        var handler = new MockHttpHandler();
+        var client = CreateOrgScopedClient("acme", handler);
+        handler.EnqueueOk(new { deleted = true });
+
+        await client.DeleteAsync("K");
+
+        Assert.Equal("/orgs/acme/secrets/K", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task OrgClient_ListAsync_UsesOrgScopedPath()
+    {
+        var handler = new MockHttpHandler();
+        var client = CreateOrgScopedClient("acme", handler);
+        handler.EnqueueOk(new { secrets = Array.Empty<object>() });
+
+        await client.ListAsync();
+
+        Assert.Equal("/orgs/acme/secrets", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task OrgClient_PruneAsync_UsesOrgScopedPath()
+    {
+        var handler = new MockHttpHandler();
+        var client = CreateOrgScopedClient("acme", handler);
+        handler.EnqueueOk(new { pruned = 0 });
+
+        await client.PruneAsync();
+
+        Assert.Equal("/orgs/acme/prune", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task OrgClient_AuditAsync_UsesOrgScopedPath()
+    {
+        var handler = new MockHttpHandler();
+        var client = CreateOrgScopedClient("acme", handler);
+        handler.EnqueueOk(new { events = Array.Empty<object>() });
+
+        await client.GetAuditLogAsync();
+
+        Assert.Equal("/orgs/acme/audit", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task OrgClient_CreateWebhookAsync_UsesOrgScopedPath()
+    {
+        var handler = new MockHttpHandler();
+        var client = CreateOrgScopedClient("acme", handler);
+        handler.EnqueueOk(new { id = "wh_1", secret = "s" });
+
+        await client.CreateWebhookAsync("https://example.com/hook");
+
+        Assert.Equal("/orgs/acme/webhooks", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task OrgClient_DeleteWebhookAsync_UsesOrgScopedPath()
+    {
+        var handler = new MockHttpHandler();
+        var client = CreateOrgScopedClient("acme", handler);
+        handler.EnqueueOk(new { deleted = true });
+
+        await client.DeleteWebhookAsync("wh_1");
+
+        Assert.Equal("/orgs/acme/webhooks/wh_1", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task OrgClient_UrlEncodesOrgName()
+    {
+        var handler = new MockHttpHandler();
+        var client = CreateOrgScopedClient("my org", handler);
+        handler.EnqueueOk(new { secrets = Array.Empty<object>() });
+
+        await client.ListAsync();
+
+        Assert.Equal("/orgs/my%20org/secrets", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    // --- /me ---
+
+    [Fact]
+    public async Task GetMeAsync_ReturnsProfile()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new { id = "usr_1", email = "a@b.com", name = "Alice", role = "admin", org = "acme", created_at = 1000L });
+
+        var result = await client.GetMeAsync();
+
+        Assert.Equal("usr_1", result.Id);
+        Assert.Equal("a@b.com", result.Email);
+        Assert.Equal("Alice", result.Name);
+        Assert.Equal("admin", result.Role);
+        Assert.Equal("acme", result.Org);
+        Assert.Equal("/me", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task UpdateMeAsync_SendsPatchRequest()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new { id = "usr_1", name = "Bob", created_at = 1000L });
+
+        var result = await client.UpdateMeAsync(name: "Bob");
+
+        Assert.Equal(HttpMethod.Patch, handler.Requests[0].Method);
+        Assert.Equal("/me", handler.Requests[0].RequestUri!.AbsolutePath);
+
+        using var doc = JsonDocument.Parse(handler.Requests[0].Body!);
+        Assert.Equal("Bob", doc.RootElement.GetProperty("name").GetString());
+    }
+
+    [Fact]
+    public async Task CreateMeKeyAsync_ReturnsKeyResult()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new { id = "key_1", key = "sirr_me_abc" });
+
+        var result = await client.CreateMeKeyAsync("my-key");
+
+        Assert.Equal("key_1", result.Id);
+        Assert.Equal("sirr_me_abc", result.Key);
+        Assert.Equal(HttpMethod.Post, handler.Requests[0].Method);
+        Assert.Equal("/me/keys", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task DeleteMeKeyAsync_ReturnsTrue()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new { deleted = true });
+
+        Assert.True(await client.DeleteMeKeyAsync("key_1"));
+        Assert.Equal("/me/keys/key_1", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task DeleteMeKeyAsync_ReturnsFalse_On404()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueNotFound();
+
+        Assert.False(await client.DeleteMeKeyAsync("nope"));
+    }
+
+    // --- Admin: Orgs ---
+
+    [Fact]
+    public async Task CreateOrgAsync_ReturnsOrg()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new { id = "org_1", name = "Acme", created_at = 1000L });
+
+        var result = await client.CreateOrgAsync("Acme");
+
+        Assert.Equal("org_1", result.Id);
+        Assert.Equal("Acme", result.Name);
+        Assert.Equal(HttpMethod.Post, handler.Requests[0].Method);
+        Assert.Equal("/admin/orgs", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task ListOrgsAsync_ReturnsOrgs()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new
+        {
+            orgs = new[]
+            {
+                new { id = "org_1", name = "Acme", created_at = 1000L },
+            }
+        });
+
+        var result = await client.ListOrgsAsync();
+
+        Assert.Single(result);
+        Assert.Equal("org_1", result[0].Id);
+        Assert.Equal("/admin/orgs", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task DeleteOrgAsync_ReturnsTrue()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new { deleted = true });
+
+        Assert.True(await client.DeleteOrgAsync("org_1"));
+        Assert.Equal("/admin/orgs/org_1", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task DeleteOrgAsync_ReturnsFalse_On404()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueNotFound();
+
+        Assert.False(await client.DeleteOrgAsync("nope"));
+    }
+
+    // --- Admin: Principals ---
+
+    [Fact]
+    public async Task CreatePrincipalAsync_ReturnsPrincipal()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new { id = "usr_1", email = "a@b.com", name = "Alice", role = "member", org = "acme", created_at = 1000L });
+
+        var result = await client.CreatePrincipalAsync("member", email: "a@b.com", name: "Alice", org: "acme");
+
+        Assert.Equal("usr_1", result.Id);
+        Assert.Equal("member", result.Role);
+        Assert.Equal(HttpMethod.Post, handler.Requests[0].Method);
+        Assert.Equal("/admin/principals", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task ListPrincipalsAsync_ReturnsPrincipals()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new
+        {
+            principals = new[]
+            {
+                new { id = "usr_1", role = "admin", created_at = 1000L },
+            }
+        });
+
+        var result = await client.ListPrincipalsAsync();
+
+        Assert.Single(result);
+        Assert.Equal("usr_1", result[0].Id);
+        Assert.Equal("/admin/principals", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task DeletePrincipalAsync_ReturnsTrue()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new { deleted = true });
+
+        Assert.True(await client.DeletePrincipalAsync("usr_1"));
+        Assert.Equal("/admin/principals/usr_1", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task DeletePrincipalAsync_ReturnsFalse_On404()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueNotFound();
+
+        Assert.False(await client.DeletePrincipalAsync("nope"));
+    }
+
+    // --- Admin: Roles ---
+
+    [Fact]
+    public async Task CreateRoleAsync_ReturnsRole()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new { id = "role_1", name = "viewer", permissions = ReadPermission, created_at = 1000L });
+
+        var result = await client.CreateRoleAsync("viewer", ReadPermission);
+
+        Assert.Equal("role_1", result.Id);
+        Assert.Equal("viewer", result.Name);
+        Assert.Equal(HttpMethod.Post, handler.Requests[0].Method);
+        Assert.Equal("/admin/roles", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task ListRolesAsync_ReturnsRoles()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new
+        {
+            roles = new[]
+            {
+                new { id = "role_1", name = "viewer", permissions = ReadPermission, created_at = 1000L },
+            }
+        });
+
+        var result = await client.ListRolesAsync();
+
+        Assert.Single(result);
+        Assert.Equal("role_1", result[0].Id);
+        Assert.Equal("/admin/roles", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task DeleteRoleAsync_ReturnsTrue()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new { deleted = true });
+
+        Assert.True(await client.DeleteRoleAsync("role_1"));
+        Assert.Equal("/admin/roles/role_1", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    [Fact]
+    public async Task DeleteRoleAsync_ReturnsFalse_On404()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueNotFound();
+
+        Assert.False(await client.DeleteRoleAsync("nope"));
+    }
+
+    // --- Helper to create an org-scoped client with a mock handler ---
+
+    private static SirrClient CreateOrgScopedClient(string org, MockHttpHandler handler)
+    {
+        var http = new HttpClient(handler)
+        {
+            BaseAddress = new Uri("http://localhost:8080"),
+        };
+        http.DefaultRequestHeaders.Authorization =
+            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-token");
+        return new SirrClient(http, org);
+    }
 }

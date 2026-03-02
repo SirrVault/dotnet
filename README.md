@@ -157,6 +157,72 @@ public class DataIngestionService(ISirrClient sirr) : BackgroundService
 
 ---
 
+## Multi-Tenant / Org Mode
+
+Set `Org` on `SirrOptions` to route all secret, audit, webhook, and prune operations through an org-scoped path (`/orgs/{org}/secrets/...`).
+
+```csharp
+var sirr = new SirrClient(new SirrOptions
+{
+    Server = "http://localhost:8080",
+    Token  = Environment.GetEnvironmentVariable("SIRR_TOKEN")!,
+    Org    = "acme",
+});
+
+// All calls now hit /orgs/acme/secrets/*, /orgs/acme/audit, etc.
+await sirr.PushAsync("DB_URL", "postgres://...");
+var secrets = await sirr.ListAsync();
+```
+
+### Dependency Injection with Org
+
+```csharp
+builder.Services.AddSirrClient(options =>
+{
+    options.Server = builder.Configuration["Sirr:Server"]!;
+    options.Token  = builder.Configuration["Sirr:Token"]!;
+    options.Org    = builder.Configuration["Sirr:Org"]; // optional
+});
+```
+
+### /me Endpoints
+
+```csharp
+// Get the authenticated principal's profile
+var me = await sirr.GetMeAsync();
+
+// Update profile
+var updated = await sirr.UpdateMeAsync(name: "Alice");
+
+// Create a personal API key
+var key = await sirr.CreateMeKeyAsync("ci-key");
+Console.WriteLine(key.Key); // shown once
+
+// Delete a personal key
+await sirr.DeleteMeKeyAsync(key.Id);
+```
+
+### Admin Endpoints
+
+```csharp
+// Orgs
+var org = await sirr.CreateOrgAsync("Acme Corp");
+var orgs = await sirr.ListOrgsAsync();
+await sirr.DeleteOrgAsync(org.Id);
+
+// Principals
+var principal = await sirr.CreatePrincipalAsync("member", email: "alice@acme.com", org: "acme");
+var principals = await sirr.ListPrincipalsAsync();
+await sirr.DeletePrincipalAsync(principal.Id);
+
+// Roles
+var role = await sirr.CreateRoleAsync("viewer", new[] { "read" });
+var roles = await sirr.ListRolesAsync();
+await sirr.DeleteRoleAsync(role.Id);
+```
+
+---
+
 ## Related
 
 | Package | Description |

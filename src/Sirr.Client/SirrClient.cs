@@ -1,6 +1,7 @@
 using System.Net;
 using System.Net.Http.Json;
 using System.Text.Json;
+using Microsoft.Extensions.DependencyInjection;
 using Sirr.Internal;
 
 namespace Sirr;
@@ -17,6 +18,7 @@ public sealed class SirrClient : ISirrClient, IDisposable
 
     private readonly HttpClient _http;
     private readonly bool _ownsHttpClient;
+    private readonly string? _org;
 
     /// <summary>
     /// Creates a client with the given options. Owns and disposes the underlying HttpClient.
@@ -32,6 +34,7 @@ public sealed class SirrClient : ISirrClient, IDisposable
         _http.DefaultRequestHeaders.Authorization =
             new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", options.Token);
         _ownsHttpClient = true;
+        _org = options.Org;
     }
 
     /// <summary>
@@ -46,12 +49,45 @@ public sealed class SirrClient : ISirrClient, IDisposable
     /// Creates a client using an externally-managed HttpClient (e.g. from IHttpClientFactory).
     /// The caller is responsible for HttpClient lifetime.
     /// </summary>
+    [ActivatorUtilitiesConstructor]
     public SirrClient(HttpClient httpClient)
     {
         ArgumentNullException.ThrowIfNull(httpClient);
         _http = httpClient;
         _ownsHttpClient = false;
     }
+
+    /// <summary>
+    /// Creates a client using an externally-managed HttpClient with org-scoping.
+    /// The caller is responsible for HttpClient lifetime.
+    /// </summary>
+    public SirrClient(HttpClient httpClient, string? org)
+    {
+        ArgumentNullException.ThrowIfNull(httpClient);
+        _http = httpClient;
+        _ownsHttpClient = false;
+        _org = org;
+    }
+
+    // --- Path helpers ---
+
+    private string OrgPrefix => _org is not null ? $"/orgs/{Uri.EscapeDataString(_org)}" : "";
+
+    private string SecretsPath(string? key = null) =>
+        key is not null
+            ? $"{OrgPrefix}/secrets/{Uri.EscapeDataString(key)}"
+            : $"{OrgPrefix}/secrets";
+
+    private string AuditPath() => $"{OrgPrefix}/audit";
+
+    private string WebhooksPath(string? id = null) =>
+        id is not null
+            ? $"{OrgPrefix}/webhooks/{Uri.EscapeDataString(id)}"
+            : $"{OrgPrefix}/webhooks";
+
+    private string PrunePath() => $"{OrgPrefix}/prune";
+
+    // --- Health ---
 
     /// <inheritdoc />
     public async Task<bool> HealthAsync(CancellationToken ct = default)
@@ -68,6 +104,8 @@ public sealed class SirrClient : ISirrClient, IDisposable
         return body?.Status == "ok";
     }
 
+    // --- Secrets ---
+
     /// <inheritdoc />
     public async Task PushAsync(string key, string value, TimeSpan? ttl = null, int? reads = null, CancellationToken ct = default)
     {
@@ -82,7 +120,7 @@ public sealed class SirrClient : ISirrClient, IDisposable
             MaxReads = reads,
         };
 
-        await SendAsync<CreateSecretResponse>(HttpMethod.Post, "/secrets", payload, ct).ConfigureAwait(false);
+        await SendAsync<CreateSecretResponse>(HttpMethod.Post, SecretsPath(), payload, ct).ConfigureAwait(false);
     }
 
     /// <inheritdoc />
@@ -94,7 +132,7 @@ public sealed class SirrClient : ISirrClient, IDisposable
         {
             var response = await SendAsync<GetSecretResponse>(
                 HttpMethod.Get,
-                $"/secrets/{Uri.EscapeDataString(key)}",
+                SecretsPath(key),
                 content: null,
                 ct).ConfigureAwait(false);
 
@@ -115,7 +153,7 @@ public sealed class SirrClient : ISirrClient, IDisposable
         {
             await SendAsync<DeleteSecretResponse>(
                 HttpMethod.Delete,
-                $"/secrets/{Uri.EscapeDataString(key)}",
+                SecretsPath(key),
                 content: null,
                 ct).ConfigureAwait(false);
 
@@ -130,7 +168,7 @@ public sealed class SirrClient : ISirrClient, IDisposable
     /// <inheritdoc />
     public async Task<IReadOnlyList<SecretMeta>> ListAsync(CancellationToken ct = default)
     {
-        var response = await SendAsync<ListSecretsResponse>(HttpMethod.Get, "/secrets", content: null, ct)
+        var response = await SendAsync<ListSecretsResponse>(HttpMethod.Get, SecretsPath(), content: null, ct)
             .ConfigureAwait(false);
 
         return response.Secrets;
@@ -157,7 +195,7 @@ public sealed class SirrClient : ISirrClient, IDisposable
     /// <inheritdoc />
     public async Task<int> PruneAsync(CancellationToken ct = default)
     {
-        var response = await SendAsync<PruneResponse>(HttpMethod.Post, "/prune", content: null, ct)
+        var response = await SendAsync<PruneResponse>(HttpMethod.Post, PrunePath(), content: null, ct)
             .ConfigureAwait(false);
 
         return response.Pruned;
@@ -170,6 +208,8 @@ public sealed class SirrClient : ISirrClient, IDisposable
         return new EnvScope(secrets);
     }
 
+    // --- Audit ---
+
     /// <inheritdoc />
     public async Task<IReadOnlyList<AuditEvent>> GetAuditLogAsync(long? since = null, long? until = null, string? action = null, int? limit = null, CancellationToken ct = default)
     {
@@ -180,23 +220,25 @@ public sealed class SirrClient : ISirrClient, IDisposable
         if (limit.HasValue) queryParts.Add($"limit={limit.Value}");
         var qs = queryParts.Count > 0 ? "?" + string.Join("&", queryParts) : "";
 
-        var response = await SendAsync<AuditEventsResponse>(HttpMethod.Get, $"/audit{qs}", content: null, ct)
+        var response = await SendAsync<AuditEventsResponse>(HttpMethod.Get, $"{AuditPath()}{qs}", content: null, ct)
             .ConfigureAwait(false);
         return response.Events;
     }
+
+    // --- Webhooks ---
 
     /// <inheritdoc />
     public async Task<WebhookCreateResult> CreateWebhookAsync(string url, string[]? events = null, CancellationToken ct = default)
     {
         var payload = new CreateWebhookRequest { Url = url, Events = events };
-        return await SendAsync<WebhookCreateResult>(HttpMethod.Post, "/webhooks", payload, ct)
+        return await SendAsync<WebhookCreateResult>(HttpMethod.Post, WebhooksPath(), payload, ct)
             .ConfigureAwait(false);
     }
 
     /// <inheritdoc />
     public async Task<IReadOnlyList<Webhook>> ListWebhooksAsync(CancellationToken ct = default)
     {
-        var response = await SendAsync<ListWebhooksResponse>(HttpMethod.Get, "/webhooks", content: null, ct)
+        var response = await SendAsync<ListWebhooksResponse>(HttpMethod.Get, WebhooksPath(), content: null, ct)
             .ConfigureAwait(false);
         return response.Webhooks;
     }
@@ -206,15 +248,17 @@ public sealed class SirrClient : ISirrClient, IDisposable
     {
         try
         {
-            await SendAsync<DeletedResponse>(HttpMethod.Delete, $"/webhooks/{Uri.EscapeDataString(id)}", content: null, ct)
+            await SendAsync<DeletedResponse>(HttpMethod.Delete, WebhooksPath(id), content: null, ct)
                 .ConfigureAwait(false);
             return true;
         }
-        catch (SirrException ex) when (ex.StatusCode == (int)System.Net.HttpStatusCode.NotFound)
+        catch (SirrException ex) when (ex.StatusCode == (int)HttpStatusCode.NotFound)
         {
             return false;
         }
     }
+
+    // --- API Keys ---
 
     /// <inheritdoc />
     public async Task<ApiKeyCreateResult> CreateApiKeyAsync(string label, string[]? permissions = null, string? prefix = null, CancellationToken ct = default)
@@ -246,11 +290,152 @@ public sealed class SirrClient : ISirrClient, IDisposable
                 .ConfigureAwait(false);
             return true;
         }
-        catch (SirrException ex) when (ex.StatusCode == (int)System.Net.HttpStatusCode.NotFound)
+        catch (SirrException ex) when (ex.StatusCode == (int)HttpStatusCode.NotFound)
         {
             return false;
         }
     }
+
+    // --- /me ---
+
+    /// <inheritdoc />
+    public async Task<MeResponse> GetMeAsync(CancellationToken ct = default)
+    {
+        return await SendAsync<MeResponse>(HttpMethod.Get, "/me", content: null, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<MeResponse> UpdateMeAsync(string? name = null, string? email = null, CancellationToken ct = default)
+    {
+        var payload = new UpdateMeRequest { Name = name, Email = email };
+        return await SendAsync<MeResponse>(HttpMethod.Patch, "/me", payload, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<KeyCreateResult> CreateMeKeyAsync(string label, string[]? permissions = null, CancellationToken ct = default)
+    {
+        var payload = new CreateMeKeyRequest { Label = label, Permissions = permissions };
+        return await SendAsync<KeyCreateResult>(HttpMethod.Post, "/me/keys", payload, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> DeleteMeKeyAsync(string id, CancellationToken ct = default)
+    {
+        try
+        {
+            await SendAsync<DeletedResponse>(HttpMethod.Delete, $"/me/keys/{Uri.EscapeDataString(id)}", content: null, ct)
+                .ConfigureAwait(false);
+            return true;
+        }
+        catch (SirrException ex) when (ex.StatusCode == (int)HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+    }
+
+    // --- Admin: Orgs ---
+
+    /// <inheritdoc />
+    public async Task<OrgResponse> CreateOrgAsync(string name, CancellationToken ct = default)
+    {
+        var payload = new CreateOrgRequest { Name = name };
+        return await SendAsync<OrgResponse>(HttpMethod.Post, "/admin/orgs", payload, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<OrgResponse>> ListOrgsAsync(CancellationToken ct = default)
+    {
+        var response = await SendAsync<ListOrgsResponse>(HttpMethod.Get, "/admin/orgs", content: null, ct)
+            .ConfigureAwait(false);
+        return response.Orgs;
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> DeleteOrgAsync(string id, CancellationToken ct = default)
+    {
+        try
+        {
+            await SendAsync<DeletedResponse>(HttpMethod.Delete, $"/admin/orgs/{Uri.EscapeDataString(id)}", content: null, ct)
+                .ConfigureAwait(false);
+            return true;
+        }
+        catch (SirrException ex) when (ex.StatusCode == (int)HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+    }
+
+    // --- Admin: Principals ---
+
+    /// <inheritdoc />
+    public async Task<PrincipalResponse> CreatePrincipalAsync(string role, string? email = null, string? name = null, string? org = null, CancellationToken ct = default)
+    {
+        var payload = new CreatePrincipalRequest { Role = role, Email = email, Name = name, Org = org };
+        return await SendAsync<PrincipalResponse>(HttpMethod.Post, "/admin/principals", payload, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<PrincipalResponse>> ListPrincipalsAsync(CancellationToken ct = default)
+    {
+        var response = await SendAsync<ListPrincipalsResponse>(HttpMethod.Get, "/admin/principals", content: null, ct)
+            .ConfigureAwait(false);
+        return response.Principals;
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> DeletePrincipalAsync(string id, CancellationToken ct = default)
+    {
+        try
+        {
+            await SendAsync<DeletedResponse>(HttpMethod.Delete, $"/admin/principals/{Uri.EscapeDataString(id)}", content: null, ct)
+                .ConfigureAwait(false);
+            return true;
+        }
+        catch (SirrException ex) when (ex.StatusCode == (int)HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+    }
+
+    // --- Admin: Roles ---
+
+    /// <inheritdoc />
+    public async Task<RoleResponse> CreateRoleAsync(string name, string[] permissions, CancellationToken ct = default)
+    {
+        var payload = new CreateRoleRequest { Name = name, Permissions = permissions };
+        return await SendAsync<RoleResponse>(HttpMethod.Post, "/admin/roles", payload, ct)
+            .ConfigureAwait(false);
+    }
+
+    /// <inheritdoc />
+    public async Task<IReadOnlyList<RoleResponse>> ListRolesAsync(CancellationToken ct = default)
+    {
+        var response = await SendAsync<ListRolesResponse>(HttpMethod.Get, "/admin/roles", content: null, ct)
+            .ConfigureAwait(false);
+        return response.Roles;
+    }
+
+    /// <inheritdoc />
+    public async Task<bool> DeleteRoleAsync(string id, CancellationToken ct = default)
+    {
+        try
+        {
+            await SendAsync<DeletedResponse>(HttpMethod.Delete, $"/admin/roles/{Uri.EscapeDataString(id)}", content: null, ct)
+                .ConfigureAwait(false);
+            return true;
+        }
+        catch (SirrException ex) when (ex.StatusCode == (int)HttpStatusCode.NotFound)
+        {
+            return false;
+        }
+    }
+
+    // --- Dispose ---
 
     /// <summary>
     /// Disposes the underlying HttpClient if this instance owns it.
@@ -262,6 +447,8 @@ public sealed class SirrClient : ISirrClient, IDisposable
             _http.Dispose();
         }
     }
+
+    // --- Internal ---
 
     private async Task<T> SendAsync<T>(HttpMethod method, string path, object? content, CancellationToken ct)
     {
