@@ -249,9 +249,10 @@ public sealed class SirrClientTests
     }
 
     [Fact]
-    public async Task PushAsync_SendsAllowedKeys()
+    public async Task PushAsync_SendsAllowedKeys_WhenOrgScoped()
     {
-        var (client, handler) = CreateClient();
+        var handler = new MockHttpHandler();
+        var client = CreateOrgScopedClient("my-org", handler);
         handler.EnqueueOk(new { key = "K" });
 
         await client.PushAsync("K", "V", allowedKeys: ["key-1", "key-2"]);
@@ -261,6 +262,19 @@ public sealed class SirrClientTests
         Assert.Equal(JsonValueKind.Array, arr.ValueKind);
         Assert.Equal("key-1", arr[0].GetString());
         Assert.Equal("key-2", arr[1].GetString());
+    }
+
+    [Fact]
+    public async Task PushAsync_OmitsAllowedKeys_WhenNotOrgScoped()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new { key = "K" });
+
+        await client.PushAsync("K", "V", allowedKeys: ["key-1", "key-2"]);
+
+        using var doc = JsonDocument.Parse(handler.Requests[0].Body!);
+        Assert.False(doc.RootElement.TryGetProperty("allowed_keys", out _),
+            "allowed_keys must not be sent on public-bucket pushes");
     }
 
     [Fact]
