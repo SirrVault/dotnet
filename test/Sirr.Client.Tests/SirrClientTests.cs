@@ -6,8 +6,6 @@ namespace Sirr.Tests;
 
 public sealed class SirrClientTests
 {
-    private static readonly string[] AllEvents = ["*"];
-
     private static (SirrClient Client, MockHttpHandler Handler) CreateClient()
     {
         var handler = new MockHttpHandler();
@@ -18,226 +16,79 @@ public sealed class SirrClientTests
         return (client, handler);
     }
 
-    // --- Health ---
-
-    [Fact]
-    public async Task HealthAsync_ReturnsTrue_WhenStatusOk()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { status = "ok" });
-
-        var result = await client.HealthAsync();
-
-        Assert.True(result);
-    }
-
-    [Fact]
-    public async Task HealthAsync_ReturnsFalse_WhenServerError()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueError(HttpStatusCode.InternalServerError, "down");
-
-        var result = await client.HealthAsync();
-
-        Assert.False(result);
-    }
-
-    [Fact]
-    public async Task HealthAsync_RequestsCorrectPath()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { status = "ok" });
-
-        await client.HealthAsync();
-
-        var request = handler.Requests[0];
-        Assert.Equal(HttpMethod.Get, request.Method);
-        Assert.Equal("/health", request.RequestUri!.AbsolutePath);
-    }
-
-    // --- Push (public dead-drop) ---
+    // --- Push ---
 
     [Fact]
     public async Task PushAsync_SendsCorrectRequest()
     {
         var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { id = "abcd1234" });
+        handler.EnqueueOk(new {
+            hash = "abc123",
+            url = "http://localhost:8080/secret/abc123",
+            expires_at = 1700000000L,
+            reads_remaining = 5,
+            owned = true
+        });
 
-        var result = await client.PushAsync("postgres://...", ttl: TimeSpan.FromMinutes(30), reads: 5);
-
-        var request = handler.Requests[0];
-        Assert.Equal(HttpMethod.Post, request.Method);
-        Assert.Equal("/secrets", request.RequestUri!.AbsolutePath);
-
-        using var doc = JsonDocument.Parse(request.Body!);
-        var root = doc.RootElement;
-
-        // No "key" field — public push is value-only
-        Assert.False(root.TryGetProperty("key", out _));
-        Assert.Equal("postgres://...", root.GetProperty("value").GetString());
-        Assert.Equal(1800, root.GetProperty("ttl_seconds").GetInt64());
-        Assert.Equal(5, root.GetProperty("max_reads").GetInt32());
-        Assert.Equal("abcd1234", result.Id);
-    }
-
-    [Fact]
-    public async Task PushAsync_OmitsNullOptionals()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { id = "hex64" });
-
-        await client.PushAsync("V");
-
-        using var doc = JsonDocument.Parse(handler.Requests[0].Body!);
-        var root = doc.RootElement;
-
-        Assert.False(root.TryGetProperty("ttl_seconds", out _));
-        Assert.False(root.TryGetProperty("max_reads", out _));
-    }
-
-    [Fact]
-    public async Task PushAsync_IncludesAuthHeader()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { id = "hex64" });
-
-        await client.PushAsync("V");
-
-        var auth = handler.Requests[0].Authorization;
-        Assert.NotNull(auth);
-        Assert.Equal("Bearer", auth!.Scheme);
-        Assert.Equal("test-token", auth.Parameter);
-    }
-
-    // --- SetAsync (org-scoped named secret) ---
-
-    [Fact]
-    public async Task SetAsync_SendsCorrectRequest()
-    {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("acme", handler);
-        handler.EnqueueOk(new { key = "DB_URL" });
-
-        var result = await client.SetAsync("DB_URL", "postgres://...", ttl: TimeSpan.FromMinutes(30), reads: 5);
+        var result = await client.PushAsync("secret-val", ttl: TimeSpan.FromMinutes(30), reads: 5, prefix: "db_");
 
         var request = handler.Requests[0];
         Assert.Equal(HttpMethod.Post, request.Method);
-        Assert.Equal("/orgs/acme/secrets", request.RequestUri!.AbsolutePath);
+        Assert.Equal("/secret", request.RequestUri!.AbsolutePath);
 
         using var doc = JsonDocument.Parse(request.Body!);
         var root = doc.RootElement;
-
-        Assert.Equal("DB_URL", root.GetProperty("key").GetString());
-        Assert.Equal("postgres://...", root.GetProperty("value").GetString());
+        Assert.Equal("secret-val", root.GetProperty("value").GetString());
         Assert.Equal(1800, root.GetProperty("ttl_seconds").GetInt64());
-        Assert.Equal(5, root.GetProperty("max_reads").GetInt32());
-        Assert.Equal("DB_URL", result.Key);
+        Assert.Equal(5, root.GetProperty("reads").GetInt32());
+        Assert.Equal("db_", root.GetProperty("prefix").GetString());
+        Assert.Equal("abc123", result.Hash);
+    }
+
+    // --- Get ---
+
+    [Fact]
+    public async Task GetAsync_ReturnsPlaintext()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOkContent("my-secret");
+
+        var result = await client.GetAsync("abc123");
+
+        Assert.Equal("my-secret", result);
+        Assert.Equal("/secret/abc123", handler.Requests[0].RequestUri!.AbsolutePath);
     }
 
     [Fact]
-    public async Task SetAsync_OmitsNullOptionals()
+    public async Task GetAsync_ReturnsNull_On410()
     {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("acme", handler);
-        handler.EnqueueOk(new { key = "K" });
+        var (client, handler) = CreateClient();
+        handler.EnqueueError(HttpStatusCode.Gone, "Gone");
 
-        await client.SetAsync("K", "V");
+        var result = await client.GetAsync("abc123");
 
-        using var doc = JsonDocument.Parse(handler.Requests[0].Body!);
-        var root = doc.RootElement;
-
-        Assert.False(root.TryGetProperty("ttl_seconds", out _));
-        Assert.False(root.TryGetProperty("max_reads", out _));
+        Assert.Null(result);
     }
 
-    [Fact]
-    public async Task SetAsync_Throws_WhenNoOrg()
-    {
-        var (client, _) = CreateClient();
-
-        await Assert.ThrowsAsync<InvalidOperationException>(() => client.SetAsync("K", "V"));
-    }
+    // --- Inspect ---
 
     [Fact]
-    public async Task SetAsync_ThrowsSecretExistsException_On409()
+    public async Task InspectAsync_ReturnsStatus()
     {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("acme", handler);
-        handler.EnqueueError(HttpStatusCode.Conflict, "secret_exists");
+        var (client, handler) = CreateClient();
+        handler.EnqueueHead(HttpStatusCode.OK, new()
+        {
+            ["X-Sirr-Created"] = "2024-01-15T10:00:00Z",
+            ["X-Sirr-Reads-Remaining"] = "5",
+            ["X-Sirr-Owned"] = "true"
+        });
 
-        var ex = await Assert.ThrowsAsync<SecretExistsException>(() => client.SetAsync("K", "V"));
+        var status = await client.InspectAsync("abc123");
 
-        Assert.Equal(409, ex.StatusCode);
-        Assert.Equal("K", ex.Key);
-    }
-
-    [Fact]
-    public async Task SetAsync_SendsAllowedKeys()
-    {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("my-org", handler);
-        handler.EnqueueOk(new { key = "K" });
-
-        await client.SetAsync("K", "V", allowedKeys: ["key-1", "key-2"]);
-
-        using var doc = JsonDocument.Parse(handler.Requests[0].Body!);
-        var arr = doc.RootElement.GetProperty("allowed_keys");
-        Assert.Equal(JsonValueKind.Array, arr.ValueKind);
-        Assert.Equal("key-1", arr[0].GetString());
-        Assert.Equal("key-2", arr[1].GetString());
-    }
-
-    [Fact]
-    public async Task SetAsync_OmitsAllowedKeys_WhenNull()
-    {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("acme", handler);
-        handler.EnqueueOk(new { key = "K" });
-
-        await client.SetAsync("K", "V");
-
-        using var doc = JsonDocument.Parse(handler.Requests[0].Body!);
-        Assert.False(doc.RootElement.TryGetProperty("allowed_keys", out _));
-    }
-
-    [Fact]
-    public async Task SetAsync_SendsWebhookUrl()
-    {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("acme", handler);
-        handler.EnqueueOk(new { key = "K" });
-
-        await client.SetAsync("K", "V", webhookUrl: "https://hooks.example.com/sirr");
-
-        using var doc = JsonDocument.Parse(handler.Requests[0].Body!);
-        Assert.Equal("https://hooks.example.com/sirr", doc.RootElement.GetProperty("webhook_url").GetString());
-    }
-
-    [Fact]
-    public async Task SetAsync_OmitsWebhookUrl_WhenNull()
-    {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("acme", handler);
-        handler.EnqueueOk(new { key = "K" });
-
-        await client.SetAsync("K", "V");
-
-        using var doc = JsonDocument.Parse(handler.Requests[0].Body!);
-        Assert.False(doc.RootElement.TryGetProperty("webhook_url", out _));
-    }
-
-    [Fact]
-    public async Task SetAsync_SendsSealOnExpiry_AsFalseDelete()
-    {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("acme", handler);
-        handler.EnqueueOk(new { key = "K" });
-
-        // sealOnExpiry=true → delete=false
-        await client.SetAsync("K", "V", sealOnExpiry: true);
-
-        using var doc = JsonDocument.Parse(handler.Requests[0].Body!);
-        Assert.False(doc.RootElement.GetProperty("delete").GetBoolean());
+        Assert.NotNull(status);
+        Assert.Equal(5, status!.ReadsRemaining);
+        Assert.True(status.Owned);
+        Assert.Equal("2024-01-15T10:00:00Z", status.Created);
     }
 
     // --- Patch ---
@@ -246,945 +97,76 @@ public sealed class SirrClientTests
     public async Task PatchAsync_SendsCorrectRequest()
     {
         var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { key = "K" });
+        handler.EnqueueOk(new { hash = "abc123", url = "...", owned = true });
 
-        await client.PatchAsync("K", ttl: TimeSpan.FromHours(2), reads: 5);
+        await client.PatchAsync("abc123", value: "new-val", reads: 10);
 
         var request = handler.Requests[0];
         Assert.Equal(HttpMethod.Patch, request.Method);
-        Assert.Equal("/secrets/K", request.RequestUri!.AbsolutePath);
+        Assert.Equal("/secret/abc123", request.RequestUri!.AbsolutePath);
 
         using var doc = JsonDocument.Parse(request.Body!);
         var root = doc.RootElement;
-        Assert.Equal(7200, root.GetProperty("ttl_seconds").GetInt64());
-        Assert.Equal(5, root.GetProperty("max_reads").GetInt32());
+        Assert.Equal("new-val", doc.RootElement.GetProperty("value").GetString());
+        Assert.Equal(10, doc.RootElement.GetProperty("reads").GetInt32());
     }
 
+    // --- Burn ---
+
     [Fact]
-    public async Task PatchAsync_OmitsNullFields()
+    public async Task BurnAsync_SendsDelete()
     {
         var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { key = "K" });
+        handler.EnqueueNoContent();
 
-        await client.PatchAsync("K", ttl: TimeSpan.FromHours(1));
+        await client.BurnAsync("abc123");
 
-        using var doc = JsonDocument.Parse(handler.Requests[0].Body!);
-        var root = doc.RootElement;
-        Assert.True(root.TryGetProperty("ttl_seconds", out _));
-        Assert.False(root.TryGetProperty("max_reads", out _));
-    }
-
-    [Fact]
-    public async Task PatchAsync_Throws_OnNonSuccess()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueError(HttpStatusCode.NotFound, "not found");
-
-        var ex = await Assert.ThrowsAsync<SirrException>(() => client.PatchAsync("K", ttl: TimeSpan.FromHours(1)));
-        Assert.Equal(404, ex.StatusCode);
-    }
-
-    [Fact]
-    public async Task OrgClient_PatchAsync_UsesOrgScopedPath()
-    {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("acme", handler);
-        handler.EnqueueOk(new { key = "K" });
-
-        await client.PatchAsync("K", ttl: TimeSpan.FromHours(1));
-
-        Assert.Equal("/orgs/acme/secrets/K", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task PatchAsync_SendsValue()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { key = "K" });
-
-        await client.PatchAsync("K", value: "new-value");
-
-        using var doc = JsonDocument.Parse(handler.Requests[0].Body!);
-        Assert.Equal("new-value", doc.RootElement.GetProperty("value").GetString());
-    }
-
-    // --- Head ---
-
-    [Fact]
-    public async Task HeadAsync_ReturnsStatus_On200()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueHead(System.Net.HttpStatusCode.OK, new()
-        {
-            ["X-Sirr-Read-Count"] = "2",
-            ["X-Sirr-Reads-Remaining"] = "3",
-            ["X-Sirr-Delete"] = "true",
-            ["X-Sirr-Created-At"] = "1700000000",
-            ["X-Sirr-Expires-At"] = "1700086400",
-        });
-
-        var status = await client.HeadAsync("K");
-
-        Assert.NotNull(status);
-        Assert.Equal(2, status!.ReadCount);
-        Assert.Equal(3, status.ReadsRemaining);
-        Assert.True(status.Delete);
-        Assert.Equal(1700000000L, status.CreatedAt);
-        Assert.Equal(1700086400L, status.ExpiresAt);
-        Assert.False(status.IsSealed);
-        var req = handler.Requests[0];
-        Assert.Equal(HttpMethod.Head, req.Method);
-        Assert.Equal("/secrets/K", req.RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task HeadAsync_ReturnsNull_On404()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueHead(System.Net.HttpStatusCode.NotFound, new());
-
-        var status = await client.HeadAsync("missing");
-
-        Assert.Null(status);
-    }
-
-    [Fact]
-    public async Task HeadAsync_ReturnsSealed_On410()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueHead(System.Net.HttpStatusCode.Gone, new()
-        {
-            ["X-Sirr-Read-Count"] = "5",
-            ["X-Sirr-Delete"] = "false",
-        });
-
-        var status = await client.HeadAsync("K");
-
-        Assert.NotNull(status);
-        Assert.True(status!.IsSealed);
-        Assert.Equal(5, status.ReadCount);
-        Assert.False(status.Delete);
-    }
-
-    [Fact]
-    public async Task HeadAsync_ReadsRemainingIsNull_WhenHeaderAbsent()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueHead(System.Net.HttpStatusCode.OK, new()
-        {
-            ["X-Sirr-Read-Count"] = "0",
-        });
-
-        var status = await client.HeadAsync("K");
-
-        Assert.NotNull(status);
-        Assert.Null(status!.ReadsRemaining);
-    }
-
-    // --- Get ---
-
-    [Fact]
-    public async Task GetAsync_Public_RoutesToPublicPath()
-    {
-        // Without org: GET /secrets/{id}
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { id = "abc123", value = "secret-value" });
-
-        var result = await client.GetAsync("abc123");
-
-        Assert.Equal("secret-value", result);
-        Assert.Equal("/secrets/abc123", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task GetAsync_OrgScoped_RoutesToOrgPath()
-    {
-        // With org: GET /orgs/{org}/secrets/{key}
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("acme", handler);
-        handler.EnqueueOk(new { key = "K", value = "secret-value" });
-
-        var result = await client.GetAsync("K");
-
-        Assert.Equal("secret-value", result);
-        Assert.Equal("/orgs/acme/secrets/K", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task GetAsync_ReturnsNull_On404()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueNotFound();
-
-        var result = await client.GetAsync("missing");
-
-        Assert.Null(result);
-    }
-
-    [Fact]
-    public async Task GetAsync_Throws_OnServerError()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueError(HttpStatusCode.InternalServerError, "boom");
-
-        var ex = await Assert.ThrowsAsync<SirrException>(() => client.GetAsync("K"));
-
-        Assert.Equal(500, ex.StatusCode);
-        Assert.Contains("boom", ex.Message);
-    }
-
-    [Fact]
-    public async Task GetAsync_UrlEncodesId()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { id = "my/id", value = "v" });
-
-        await client.GetAsync("my/id");
-
-        Assert.Equal("/secrets/my%2Fid", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    // --- Delete ---
-
-    [Fact]
-    public async Task DeleteAsync_ReturnsTrue_OnSuccess()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { deleted = true });
-
-        var result = await client.DeleteAsync("K");
-
-        Assert.True(result);
         Assert.Equal(HttpMethod.Delete, handler.Requests[0].Method);
-    }
-
-    [Fact]
-    public async Task DeleteAsync_ReturnsFalse_On404()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueNotFound();
-
-        var result = await client.DeleteAsync("missing");
-
-        Assert.False(result);
-    }
-
-    [Fact]
-    public async Task DeleteAsync_Throws_OnOtherError()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueError(HttpStatusCode.Forbidden, "denied");
-
-        var ex = await Assert.ThrowsAsync<SirrException>(() => client.DeleteAsync("K"));
-
-        Assert.Equal(403, ex.StatusCode);
-    }
-
-    // --- List ---
-
-    [Fact]
-    public async Task ListAsync_ReturnsSecretMetas()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new
-        {
-            secrets = new object[]
-            {
-                new { key = "A", created_at = 1000L, expires_at = 2000L, max_reads = 5, read_count = 1 },
-                new { key = "B", created_at = 1100L, read_count = 0 },
-            }
-        });
-
-        var result = await client.ListAsync();
-
-        Assert.Equal(2, result.Count);
-        Assert.Equal("A", result[0].Key);
-        Assert.Equal(1000L, result[0].CreatedAt);
-        Assert.Equal(2000L, result[0].ExpiresAt);
-        Assert.Equal(5, result[0].MaxReads);
-        Assert.Equal(1, result[0].ReadCount);
-        Assert.Equal("B", result[1].Key);
-        Assert.Null(result[1].ExpiresAt);
-        Assert.Null(result[1].MaxReads);
-    }
-
-    [Fact]
-    public async Task ListAsync_HandlesEmptyList()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { secrets = Array.Empty<object>() });
-
-        var result = await client.ListAsync();
-
-        Assert.Empty(result);
-    }
-
-    // --- PullAll ---
-
-    [Fact]
-    public async Task PullAllAsync_CombinesListAndGet()
-    {
-        var (client, handler) = CreateClient();
-
-        // List response
-        handler.EnqueueOk(new
-        {
-            secrets = new[]
-            {
-                new { key = "A", created_at = 1L, read_count = 0 },
-                new { key = "B", created_at = 2L, read_count = 0 },
-            }
-        });
-        // Get A
-        handler.EnqueueOk(new { key = "A", value = "val-a" });
-        // Get B
-        handler.EnqueueOk(new { key = "B", value = "val-b" });
-
-        var result = await client.PullAllAsync();
-
-        Assert.Equal(2, result.Count);
-        Assert.Equal("val-a", result["A"]);
-        Assert.Equal("val-b", result["B"]);
-    }
-
-    [Fact]
-    public async Task PullAllAsync_SkipsBurnedSecrets()
-    {
-        var (client, handler) = CreateClient();
-
-        handler.EnqueueOk(new
-        {
-            secrets = new[]
-            {
-                new { key = "A", created_at = 1L, read_count = 0 },
-                new { key = "B", created_at = 2L, read_count = 0 },
-            }
-        });
-        handler.EnqueueOk(new { key = "A", value = "val-a" });
-        handler.EnqueueNotFound(); // B burned between list and get
-
-        var result = await client.PullAllAsync();
-
-        Assert.Single(result);
-        Assert.Equal("val-a", result["A"]);
-    }
-
-    // --- Prune ---
-
-    [Fact]
-    public async Task PruneAsync_ReturnsCount()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { pruned = 7 });
-
-        var result = await client.PruneAsync();
-
-        Assert.Equal(7, result);
-        Assert.Equal(HttpMethod.Post, handler.Requests[0].Method);
-        Assert.Equal("/prune", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    // --- Error handling ---
-
-    [Fact]
-    public async Task SirrException_HasCorrectStatusCodeAndMessage()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueError(HttpStatusCode.Unauthorized, "invalid token");
-
-        var ex = await Assert.ThrowsAsync<SirrException>(() => client.ListAsync());
-
-        Assert.Equal(401, ex.StatusCode);
-        Assert.Contains("invalid token", ex.Message);
-        Assert.Contains("401", ex.Message);
-    }
-
-    // --- Constructor ---
-
-    [Fact]
-    public void Constructor_WithOptions_SetsBaseAddress()
-    {
-        using var client = new SirrClient(new SirrOptions
-        {
-            Server = "https://sirr.example.com",
-            Token = "tok",
-        });
-
-        Assert.NotNull(client);
-    }
-
-    [Fact]
-    public void Constructor_WithServerAndToken()
-    {
-        using var client = new SirrClient("https://sirr.example.com", "tok");
-        Assert.NotNull(client);
-    }
-
-    // --- Dispose ---
-
-    [Fact]
-    public void Dispose_DoesNotThrow_WhenNotOwned()
-    {
-        var handler = new MockHttpHandler();
-        var http = new HttpClient(handler) { BaseAddress = new Uri("http://localhost:8080") };
-        var client = new SirrClient(http);
-
-        client.Dispose();
-
-        // HttpClient should still be usable since SirrClient doesn't own it
-        Assert.Equal(new Uri("http://localhost:8080"), http.BaseAddress);
+        Assert.Equal("/secret/abc123", handler.Requests[0].RequestUri!.AbsolutePath);
     }
 
     // --- Audit ---
 
     [Fact]
-    public async Task GetAuditLogAsync_ReturnsEvents()
+    public async Task AuditAsync_ReturnsEvents()
     {
         var (client, handler) = CreateClient();
-        handler.EnqueueOk(new
-        {
-            events = new[]
-            {
-                new { id = 1L, timestamp = 1000L, action = "secret.create", key = "K", source_ip = "127.0.0.1", success = true, detail = (string?)null },
+        handler.EnqueueOk(new {
+            hash = "abc123",
+            created_at = 1700000000L,
+            events = new[] {
+                new { type = "secret.create", at = 1700000000L, ip = "1.2.3.4" }
             }
         });
 
-        var result = await client.GetAuditLogAsync();
+        var result = await client.AuditAsync("abc123");
+
+        Assert.Single(result.Events);
+        Assert.Equal("secret.create", result.Events[0].Type);
+        Assert.Equal("/secret/abc123/audit", handler.Requests[0].RequestUri!.AbsolutePath);
+    }
+
+    // --- List ---
+
+    [Fact]
+    public async Task ListAsync_ReturnsMetas()
+    {
+        var (client, handler) = CreateClient();
+        handler.EnqueueOk(new[] {
+            new {
+                hash = "abc123",
+                created_at = 1700000000L,
+                ttl_expires_at = 1700003600L,
+                reads_remaining = 3,
+                burned = false,
+                owned = true
+            }
+        });
+
+        var result = await client.ListAsync();
 
         Assert.Single(result);
-        Assert.Equal("secret.create", result[0].Action);
-        Assert.Equal("K", result[0].Key);
-    }
-
-    [Fact]
-    public async Task GetAuditLogAsync_SendsQueryParams()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { events = Array.Empty<object>() });
-
-        await client.GetAuditLogAsync(since: 100, action: "secret.create", limit: 10);
-
-        var uri = handler.Requests[0].RequestUri!.ToString();
-        Assert.Contains("since=100", uri);
-        Assert.Contains("action=secret.create", uri);
-        Assert.Contains("limit=10", uri);
-    }
-
-    [Fact]
-    public async Task GetAuditLogAsync_SendsKeyFilter()
-    {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("acme", handler);
-        handler.EnqueueOk(new { events = Array.Empty<object>() });
-
-        await client.GetAuditLogAsync(key: "MY_SECRET");
-
-        var uri = handler.Requests[0].RequestUri!.ToString();
-        Assert.Contains("key=MY_SECRET", uri);
-        Assert.Contains("/orgs/acme/audit", uri);
-    }
-
-    // --- Webhooks ---
-
-    [Fact]
-    public async Task CreateWebhookAsync_ReturnsResult()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { id = "wh_1", secret = "s3c" });
-
-        var result = await client.CreateWebhookAsync("https://example.com/hook");
-
-        Assert.Equal("wh_1", result.Id);
-        Assert.Equal("s3c", result.Secret);
-    }
-
-    [Fact]
-    public async Task ListWebhooksAsync_ReturnsWebhooks()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new
-        {
-            webhooks = new[]
-            {
-                new { id = "wh_1", url = "https://example.com", events = AllEvents, created_at = 1000L },
-            }
-        });
-
-        var result = await client.ListWebhooksAsync();
-
-        Assert.Single(result);
-        Assert.Equal("wh_1", result[0].Id);
-    }
-
-    [Fact]
-    public async Task DeleteWebhookAsync_ReturnsTrue()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { deleted = true });
-
-        Assert.True(await client.DeleteWebhookAsync("wh_1"));
-    }
-
-    [Fact]
-    public async Task DeleteWebhookAsync_ReturnsFalse_On404()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueNotFound();
-
-        Assert.False(await client.DeleteWebhookAsync("wh_x"));
-    }
-
-    // --- Org-scoped paths ---
-
-    [Fact]
-    public async Task OrgClient_SetAsync_UsesOrgScopedPath()
-    {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("acme", handler);
-        handler.EnqueueOk(new { key = "K" });
-
-        await client.SetAsync("K", "V");
-
-        Assert.Equal("/orgs/acme/secrets", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task PublicClient_PushAsync_UsesPublicPath()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { id = "hex64" });
-
-        await client.PushAsync("V");
-
-        Assert.Equal("/secrets", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task OrgClient_GetAsync_UsesOrgScopedPath()
-    {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("acme", handler);
-        handler.EnqueueOk(new { key = "K", value = "v" });
-
-        await client.GetAsync("K");
-
-        Assert.Equal("/orgs/acme/secrets/K", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task OrgClient_DeleteAsync_UsesOrgScopedPath()
-    {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("acme", handler);
-        handler.EnqueueOk(new { deleted = true });
-
-        await client.DeleteAsync("K");
-
-        Assert.Equal("/orgs/acme/secrets/K", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task OrgClient_ListAsync_UsesOrgScopedPath()
-    {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("acme", handler);
-        handler.EnqueueOk(new { secrets = Array.Empty<object>() });
-
-        await client.ListAsync();
-
-        Assert.Equal("/orgs/acme/secrets", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task OrgClient_PruneAsync_UsesOrgScopedPath()
-    {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("acme", handler);
-        handler.EnqueueOk(new { pruned = 0 });
-
-        await client.PruneAsync();
-
-        Assert.Equal("/orgs/acme/prune", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task OrgClient_AuditAsync_UsesOrgScopedPath()
-    {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("acme", handler);
-        handler.EnqueueOk(new { events = Array.Empty<object>() });
-
-        await client.GetAuditLogAsync();
-
-        Assert.Equal("/orgs/acme/audit", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task OrgClient_CreateWebhookAsync_UsesOrgScopedPath()
-    {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("acme", handler);
-        handler.EnqueueOk(new { id = "wh_1", secret = "s" });
-
-        await client.CreateWebhookAsync("https://example.com/hook");
-
-        Assert.Equal("/orgs/acme/webhooks", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task OrgClient_DeleteWebhookAsync_UsesOrgScopedPath()
-    {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("acme", handler);
-        handler.EnqueueOk(new { deleted = true });
-
-        await client.DeleteWebhookAsync("wh_1");
-
-        Assert.Equal("/orgs/acme/webhooks/wh_1", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task OrgClient_UrlEncodesOrgName()
-    {
-        var handler = new MockHttpHandler();
-        var client = CreateOrgScopedClient("my org", handler);
-        handler.EnqueueOk(new { secrets = Array.Empty<object>() });
-
-        await client.ListAsync();
-
-        Assert.Equal("/orgs/my%20org/secrets", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    // --- /me ---
-
-    [Fact]
-    public async Task GetMeAsync_ReturnsProfile()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { id = "usr_1", name = "Alice", role = "admin", org_id = "acme", created_at = 1000L });
-
-        var result = await client.GetMeAsync();
-
-        Assert.Equal("usr_1", result.Id);
-        Assert.Equal("Alice", result.Name);
-        Assert.Equal("admin", result.Role);
-        Assert.Equal("acme", result.OrgId);
-        Assert.Equal("/me", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task GetMeAsync_DeserializesKeys()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new
-        {
-            id = "usr_1",
-            name = "Alice",
-            role = "admin",
-            org_id = "acme",
-            created_at = 1000L,
-            keys = new[]
-            {
-                new { id = "key_1", name = "ci-key", valid_after = 1000L, valid_before = 9999L, created_at = 1000L },
-            }
-        });
-
-        var result = await client.GetMeAsync();
-
-        Assert.NotNull(result.Keys);
-        Assert.Single(result.Keys!);
-        Assert.Equal("key_1", result.Keys![0].Id);
-        Assert.Equal("ci-key", result.Keys![0].Name);
-        Assert.Equal(9999L, result.Keys![0].ValidBefore);
-    }
-
-    [Fact]
-    public async Task UpdateMeAsync_SendsPatchRequest()
-    {
-        var (client, handler) = CreateClient();
-        // PATCH /me returns id, name, role, org_id, metadata — no created_at or keys
-        handler.EnqueueOk(new { id = "usr_1", name = "Bob", role = "admin", org_id = "acme", metadata = new { team = "platform" } });
-
-        var result = await client.UpdateMeAsync(new Dictionary<string, string> { ["team"] = "platform" });
-
-        Assert.Equal(HttpMethod.Patch, handler.Requests[0].Method);
-        Assert.Equal("/me", handler.Requests[0].RequestUri!.AbsolutePath);
-        Assert.Equal("usr_1", result.Id);
-        Assert.Equal(0L, result.CreatedAt); // not returned by PATCH
-
-        using var doc = JsonDocument.Parse(handler.Requests[0].Body!);
-        Assert.Equal("platform", doc.RootElement.GetProperty("metadata").GetProperty("team").GetString());
-    }
-
-    [Fact]
-    public async Task CreateMeKeyAsync_ReturnsKeyResult()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { id = "key_1", name = "my-key", key = "sirr_key_abc", valid_after = 1000L, valid_before = 4600L });
-
-        var result = await client.CreateMeKeyAsync("my-key", validForSeconds: 3600);
-
-        Assert.Equal("key_1", result.Id);
-        Assert.Equal("my-key", result.Name);
-        Assert.Equal("sirr_key_abc", result.Key);
-        Assert.Equal(4600L, result.ValidBefore);
-        Assert.Equal(HttpMethod.Post, handler.Requests[0].Method);
-        Assert.Equal("/me/keys", handler.Requests[0].RequestUri!.AbsolutePath);
-
-        using var doc = JsonDocument.Parse(handler.Requests[0].Body!);
-        Assert.Equal("my-key", doc.RootElement.GetProperty("name").GetString());
-        Assert.Equal(3600, doc.RootElement.GetProperty("valid_for_seconds").GetInt64());
-    }
-
-    [Fact]
-    public async Task CreateMeKeyAsync_SendsValidBefore()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { id = "key_1", name = "k", key = "sirr_abc", valid_after = 1000L, valid_before = 9999L });
-
-        await client.CreateMeKeyAsync("k", validBefore: 9999L);
-
-        using var doc = JsonDocument.Parse(handler.Requests[0].Body!);
-        Assert.Equal(9999L, doc.RootElement.GetProperty("valid_before").GetInt64());
-        Assert.False(doc.RootElement.TryGetProperty("valid_for_seconds", out _));
-    }
-
-    [Fact]
-    public async Task DeleteMeKeyAsync_ReturnsTrue()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { deleted = true });
-
-        Assert.True(await client.DeleteMeKeyAsync("key_1"));
-        Assert.Equal("/me/keys/key_1", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task DeleteMeKeyAsync_ReturnsFalse_On404()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueNotFound();
-
-        Assert.False(await client.DeleteMeKeyAsync("nope"));
-    }
-
-    // --- Admin: Orgs ---
-
-    [Fact]
-    public async Task CreateOrgAsync_ReturnsOrg()
-    {
-        var (client, handler) = CreateClient();
-        // POST /orgs returns {id, name} — no created_at, no metadata
-        handler.EnqueueOk(new { id = "org_1", name = "Acme" });
-
-        var result = await client.CreateOrgAsync("Acme");
-
-        Assert.Equal("org_1", result.Id);
-        Assert.Equal("Acme", result.Name);
-        Assert.Equal(HttpMethod.Post, handler.Requests[0].Method);
-        Assert.Equal("/orgs", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task CreateOrgAsync_SendsMetadata()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { id = "org_1", name = "Acme" });
-
-        await client.CreateOrgAsync("Acme", metadata: new Dictionary<string, string> { ["env"] = "prod" });
-
-        using var doc = JsonDocument.Parse(handler.Requests[0].Body!);
-        Assert.Equal("prod", doc.RootElement.GetProperty("metadata").GetProperty("env").GetString());
-    }
-
-    [Fact]
-    public async Task ListOrgsAsync_ReturnsOrgs()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new
-        {
-            orgs = new[]
-            {
-                new { id = "org_1", name = "Acme", created_at = 1000L, metadata = new { env = "prod" } },
-            }
-        });
-
-        var result = await client.ListOrgsAsync();
-
-        Assert.Single(result);
-        Assert.Equal("org_1", result[0].Id);
-        Assert.Equal(1000L, result[0].CreatedAt);
-        Assert.Equal("prod", result[0].Metadata?["env"]);
-        Assert.Equal("/orgs", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task DeleteOrgAsync_ReturnsTrue()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { deleted = true });
-
-        Assert.True(await client.DeleteOrgAsync("org_1"));
-        Assert.Equal("/orgs/org_1", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task DeleteOrgAsync_ReturnsFalse_On404()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueNotFound();
-
-        Assert.False(await client.DeleteOrgAsync("nope"));
-    }
-
-    // --- Admin: Principals ---
-
-    [Fact]
-    public async Task CreatePrincipalAsync_ReturnsPrincipal()
-    {
-        var (client, handler) = CreateClient();
-        // POST /orgs/{id}/principals returns {id, name, role, org_id}
-        handler.EnqueueOk(new { id = "usr_1", name = "Alice", role = "member", org_id = "org_1" });
-
-        var result = await client.CreatePrincipalAsync("org_1", "member", "Alice");
-
-        Assert.Equal("usr_1", result.Id);
-        Assert.Equal("member", result.Role);
-        Assert.Equal("org_1", result.OrgId);
-        Assert.Equal(HttpMethod.Post, handler.Requests[0].Method);
-        Assert.Equal("/orgs/org_1/principals", handler.Requests[0].RequestUri!.AbsolutePath);
-
-        using var doc = JsonDocument.Parse(handler.Requests[0].Body!);
-        Assert.Equal("Alice", doc.RootElement.GetProperty("name").GetString());
-        Assert.Equal("member", doc.RootElement.GetProperty("role").GetString());
-        Assert.False(doc.RootElement.TryGetProperty("metadata", out _)); // omitted when null
-    }
-
-    [Fact]
-    public async Task CreatePrincipalAsync_SendsMetadata()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { id = "usr_1", name = "Alice", role = "member", org_id = "org_1" });
-
-        await client.CreatePrincipalAsync("org_1", "member", "Alice", metadata: new Dictionary<string, string> { ["team"] = "sre" });
-
-        using var doc = JsonDocument.Parse(handler.Requests[0].Body!);
-        Assert.Equal("sre", doc.RootElement.GetProperty("metadata").GetProperty("team").GetString());
-    }
-
-    [Fact]
-    public async Task ListPrincipalsAsync_ReturnsPrincipals()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new
-        {
-            principals = new[]
-            {
-                new { id = "usr_1", name = "Alice", role = "admin", org_id = "org_1", created_at = 1000L, metadata = new { team = "sre" } },
-            }
-        });
-
-        var result = await client.ListPrincipalsAsync("org_1");
-
-        Assert.Single(result);
-        Assert.Equal("usr_1", result[0].Id);
-        Assert.Equal("org_1", result[0].OrgId);
-        Assert.Equal("sre", result[0].Metadata?["team"]);
-        Assert.Equal("/orgs/org_1/principals", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task DeletePrincipalAsync_ReturnsTrue()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { deleted = true });
-
-        Assert.True(await client.DeletePrincipalAsync("org_1", "usr_1"));
-        Assert.Equal("/orgs/org_1/principals/usr_1", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task DeletePrincipalAsync_ReturnsFalse_On404()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueNotFound();
-
-        Assert.False(await client.DeletePrincipalAsync("org_1", "nope"));
-    }
-
-    // --- Admin: Roles ---
-
-    [Fact]
-    public async Task CreateRoleAsync_ReturnsRole()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { name = "viewer", permissions = "R", org_id = "org_1" });
-
-        var result = await client.CreateRoleAsync("org_1", "viewer", "R");
-
-        Assert.Equal("viewer", result.Name);
-        Assert.Equal("R", result.Permissions);
-        Assert.Equal("org_1", result.OrgId);
-        Assert.Equal(HttpMethod.Post, handler.Requests[0].Method);
-        Assert.Equal("/orgs/org_1/roles", handler.Requests[0].RequestUri!.AbsolutePath);
-
-        using var doc = JsonDocument.Parse(handler.Requests[0].Body!);
-        Assert.Equal("viewer", doc.RootElement.GetProperty("name").GetString());
-        Assert.Equal("R", doc.RootElement.GetProperty("permissions").GetString());
-    }
-
-    [Fact]
-    public async Task ListRolesAsync_ReturnsRoles()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new
-        {
-            roles = new[]
-            {
-                new { name = "viewer", permissions = "R", org_id = "org_1", built_in = false, created_at = 1000L },
-                new { name = "admin", permissions = "CWRDS", org_id = "", built_in = true, created_at = 0L },
-            }
-        });
-
-        var result = await client.ListRolesAsync("org_1");
-
-        Assert.Equal(2, result.Count);
-        Assert.Equal("viewer", result[0].Name);
-        Assert.Equal("R", result[0].Permissions);
-        Assert.False(result[0].BuiltIn);
-        Assert.True(result[1].BuiltIn);
-        Assert.Equal("/orgs/org_1/roles", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task DeleteRoleAsync_ReturnsTrue()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueOk(new { deleted = true });
-
-        Assert.True(await client.DeleteRoleAsync("org_1", "viewer"));
-        Assert.Equal("/orgs/org_1/roles/viewer", handler.Requests[0].RequestUri!.AbsolutePath);
-    }
-
-    [Fact]
-    public async Task DeleteRoleAsync_ReturnsFalse_On404()
-    {
-        var (client, handler) = CreateClient();
-        handler.EnqueueNotFound();
-
-        Assert.False(await client.DeleteRoleAsync("org_1", "nope"));
-    }
-
-    // --- Helper to create an org-scoped client with a mock handler ---
-
-    private static SirrClient CreateOrgScopedClient(string org, MockHttpHandler handler)
-    {
-        var http = new HttpClient(handler)
-        {
-            BaseAddress = new Uri("http://localhost:8080"),
-        };
-        http.DefaultRequestHeaders.Authorization =
-            new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", "test-token");
-        return new SirrClient(http, org);
+        Assert.Equal("abc123", result[0].Hash);
+        Assert.Equal(3, result[0].ReadsRemaining);
     }
 }

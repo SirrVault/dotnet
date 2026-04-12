@@ -31,6 +31,19 @@ internal sealed class MockHttpHandler : HttpMessageHandler
 
     public void EnqueueOk(object body) => Enqueue(HttpStatusCode.OK, body);
 
+    public void EnqueueOkContent(string content)
+    {
+        _responses.Enqueue(new HttpResponseMessage(HttpStatusCode.OK)
+        {
+            Content = new StringContent(content, Encoding.UTF8, "text/plain"),
+        });
+    }
+
+    public void EnqueueNoContent()
+    {
+        _responses.Enqueue(new HttpResponseMessage(HttpStatusCode.NoContent));
+    }
+
     public void EnqueueCreated(object body) => Enqueue(HttpStatusCode.Created, body);
 
     public void EnqueueNotFound() =>

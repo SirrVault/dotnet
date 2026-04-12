@@ -28,7 +28,7 @@ public static class SirrServiceCollectionExtensions
             var options = sp.GetRequiredService<IOptions<SirrOptions>>().Value;
             var factory = sp.GetRequiredService<IHttpClientFactory>();
             var httpClient = factory.CreateClient(HttpClientName);
-            return new SirrClient(httpClient, options.Org);
+            return new SirrClient(httpClient);
         });
 
         return services.AddHttpClient(HttpClientName, (sp, client) =>
